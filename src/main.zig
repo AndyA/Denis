@@ -6,71 +6,87 @@ fn bufferedWriterSize(comptime size: usize, stream: anytype) BW(size, @TypeOf(st
     return .{ .unbuffered_writer = stream };
 }
 
-const FullHash = [32]u8;
+const DenisHash = [32]u8;
 
-fn hashLine(text: []const u8) FullHash {
+fn hashLine(text: []const u8) DenisHash {
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     h.update(text);
     return h.finalResult();
 }
 
-fn denis(alloc: std.mem.Allocator, reader: std.io.AnyReader, writer: std.io.AnyWriter) !void {
-    var line_buf = try std.ArrayList(u8).initCapacity(alloc, 1024);
-    defer line_buf.deinit();
+const HashHasher = struct {
+    const Self = @This();
+    pub fn hash(_: Self, key: DenisHash) u64 {
+        return std.mem.readInt(u64, key[0..8], .little);
+    }
+    pub fn eql(_: Self, a: DenisHash, b: DenisHash) bool {
+        return std.mem.eql(u8, &a, &b);
+    }
+};
 
-    const HashHasher = struct {
-        const Self = @This();
-        pub fn hash(_: Self, key: FullHash) u64 {
-            return std.mem.readInt(u64, key[0..8], .little);
-        }
-        pub fn eql(_: Self, a: FullHash, b: FullHash) bool {
-            return std.mem.eql(u8, &a, &b);
-        }
-    };
+pub const Denis = struct {
+    alloc: std.mem.Allocator,
+    line_buf: std.ArrayList(u8),
+    seen: std.HashMapUnmanaged(DenisHash, void, HashHasher, 75),
+    writer: std.io.AnyWriter,
 
-    const ctx = HashHasher{};
-    var seen = std.HashMapUnmanaged(FullHash, void, HashHasher, 75){};
-    defer seen.deinit(alloc);
+    const Self = @This();
 
-    var eof = false;
-    while (!eof) {
-        reader.readUntilDelimiterArrayList(&line_buf, '\n', undefined) catch |err| switch (err) {
-            error.EndOfStream => eof = true,
-            else => return err,
+    pub fn init(
+        alloc: std.mem.Allocator,
+        writer: std.io.AnyWriter,
+    ) !Self {
+        var line_buf = try std.ArrayList(u8).initCapacity(alloc, 1000);
+        errdefer line_buf.deinit();
+        var seen = std.HashMapUnmanaged(DenisHash, void, HashHasher, 75){};
+        errdefer seen.deinit(alloc);
+
+        return Self{
+            .alloc = alloc,
+            .line_buf = line_buf,
+            .seen = seen,
+            .writer = writer,
         };
-        if (line_buf.items.len == 0) continue; // Skip empty lines
-        const hash = hashLine(line_buf.items);
-        const entry = try seen.getOrPutContext(alloc, hash, ctx);
-        if (!entry.found_existing) {
-            // novelty!
-            try writer.print("{s}\n", .{line_buf.items});
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.line_buf.deinit();
+        self.seen.deinit(self.alloc);
+    }
+
+    pub fn process(self: *Self, reader: std.io.AnyReader) !void {
+        var eof = false;
+        while (!eof) {
+            reader.readUntilDelimiterArrayList(&self.line_buf, '\n', undefined) catch |err| switch (err) {
+                error.EndOfStream => eof = true,
+                else => return err,
+            };
+            if (self.line_buf.items.len == 0) continue; // Skip empty lines
+            const hash = hashLine(self.line_buf.items);
+            const entry = try self.seen.getOrPutContext(self.alloc, hash, HashHasher{});
+            if (!entry.found_existing) {
+                // novelty!
+                try self.writer.print("{s}\n", .{self.line_buf.items});
+            }
         }
     }
-}
-fn denisShim(alloc: std.mem.Allocator, in_file: anytype, writer: std.io.AnyWriter) !void {
+};
+
+fn denisShim(denis: *Denis, in_file: anytype) !void {
     var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
     const reader = in_buf.reader().any();
-    try denis(alloc, reader, writer);
+    try denis.process(reader);
 }
 
-fn denisFile(source: []const u8) !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
-    const out_file = std.io.getStdOut();
-    var out_buf = bufferedWriterSize(128 * 1024, out_file.writer());
-    const writer = out_buf.writer().any();
-
+fn denisFile(denis: *Denis, source: []const u8) !void {
     if (std.mem.eql(u8, source, "-")) {
         const in_file = std.io.getStdIn();
-        try denisShim(arena.allocator(), in_file, writer);
+        try denisShim(denis, in_file);
     } else {
         const in_file = try std.fs.cwd().openFile(source, .{});
         defer in_file.close();
-        try denisShim(arena.allocator(), in_file, writer);
+        try denisShim(denis, in_file);
     }
-
-    try out_buf.flush();
 }
 
 const Config = struct {
@@ -80,12 +96,22 @@ const Config = struct {
 var config = Config{ .files = undefined };
 
 fn denisMain() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const out_file = std.io.getStdOut();
+    var out_buf = bufferedWriterSize(128 * 1024, out_file.writer());
+    const writer = out_buf.writer().any();
+
+    var denis = try Denis.init(arena.allocator(), writer);
+
     for (config.files) |file| {
-        denisFile(file) catch |err| {
+        denisFile(&denis, file) catch |err| {
             std.debug.print("{s}: {s}\n", .{ file, @errorName(err) });
             std.process.exit(1);
         };
     }
+    try out_buf.flush();
 }
 
 pub fn main() !void {
