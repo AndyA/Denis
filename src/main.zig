@@ -2,45 +2,122 @@
 //! you are building an executable. If you are making a library, the convention
 //! is to delete this file and start with root.zig instead.
 
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+const std = @import("std");
+const cli = @import("zig-cli");
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // Don't forget to flush!
+const BW = std.io.BufferedWriter;
+fn bufferedWriterSize(comptime size: usize, stream: anytype) BW(size, @TypeOf(stream)) {
+    return .{ .unbuffered_writer = stream };
 }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+const FullHash = [32]u8;
+
+fn hashLine(text: []const u8) FullHash {
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(text);
+    return h.finalResult();
 }
 
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-}
+fn deniqStream(
+    alloc: std.mem.Allocator,
+    reader: std.io.AnyReader,
+    writer: std.io.AnyWriter,
+) !void {
+    var line_buf = try std.ArrayList(u8).initCapacity(alloc, 1024);
+    defer line_buf.deinit();
 
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
+    const HashHasher = struct {
+        const Self = @This();
+        pub fn hash(_: Self, key: FullHash) u64 {
+            return std.mem.readInt(u64, key[0..8], .little);
+        }
+        pub fn eql(_: Self, a: FullHash, b: FullHash) bool {
+            return std.mem.eql(u8, &a, &b);
         }
     };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+
+    const ctx = HashHasher{};
+    var seen = std.HashMapUnmanaged(FullHash, void, HashHasher, 75){};
+    defer seen.deinit(alloc);
+
+    var eof = false;
+    while (!eof) {
+        reader.readUntilDelimiterArrayList(&line_buf, '\n', undefined) catch |err| switch (err) {
+            error.EndOfStream => eof = true,
+            else => return err,
+        };
+        if (line_buf.items.len == 0) continue; // Skip empty lines
+        const hash = hashLine(line_buf.items);
+        const entry = try seen.getOrPutContext(alloc, hash, ctx);
+        if (!entry.found_existing) {
+            try writer.print("{s}\n", .{line_buf.items});
+        }
+    }
 }
 
-const std = @import("std");
+fn deniqFile(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
 
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("deniq_lib");
+    const out_file = std.io.getStdOut();
+    var out_buf = bufferedWriterSize(128 * 1024, out_file.writer());
+    const writer = out_buf.writer().any();
+
+    if (std.mem.eql(u8, source, "-")) {
+        const in_file = std.io.getStdIn();
+
+        var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
+        const reader = in_buf.reader().any();
+        try deniqStream(arena.allocator(), reader, writer);
+    } else {
+        const in_file = try std.fs.cwd().openFile(source, .{});
+        defer in_file.close();
+
+        var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
+        const reader = in_buf.reader().any();
+        try deniqStream(arena.allocator(), reader, writer);
+    }
+
+    try out_buf.flush();
+}
+
+const Config = struct {
+    files: []const []const u8,
+};
+
+var config = Config{ .files = undefined };
+
+fn deniq() !void {
+    for (config.files) |file| {
+        deniqFile(file) catch |err| {
+            std.debug.print("{s}: {s}\n", .{ file, @errorName(err) });
+            std.process.exit(1);
+        };
+    }
+}
+
+pub fn main() !void {
+    var r = try cli.AppRunner.init(std.heap.page_allocator);
+
+    const app = cli.App{
+        .command = cli.Command{
+            .name = "deniq",
+            .target = cli.CommandTarget{
+                .action = cli.CommandAction{
+                    .positional_args = cli.PositionalArgs{
+                        .required = try r.allocPositionalArgs(&.{
+                            .{
+                                .name = "files",
+                                .help = "Files to process. Use '-' for stdin.",
+                                .value_ref = r.mkRef(&config.files),
+                            },
+                        }),
+                    },
+                    .exec = deniq,
+                },
+            },
+        },
+    };
+
+    return r.run(&app);
+}
