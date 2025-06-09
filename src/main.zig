@@ -43,9 +43,9 @@ pub const Denis = struct {
 
         return Self{
             .alloc = alloc,
+            .writer = writer,
             .line_buf = line_buf,
             .seen = seen,
-            .writer = writer,
         };
     }
 
@@ -72,20 +72,20 @@ pub const Denis = struct {
     }
 };
 
-fn denisShim(denis: *Denis, in_file: anytype) !void {
+fn processShim(denis: *Denis, in_file: anytype) !void {
     var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
     const reader = in_buf.reader().any();
     try denis.process(reader);
 }
 
-fn denisFile(denis: *Denis, source: []const u8) !void {
+fn processFile(denis: *Denis, source: []const u8) !void {
     if (std.mem.eql(u8, source, "-")) {
         const in_file = std.io.getStdIn();
-        try denisShim(denis, in_file);
+        try processShim(denis, in_file);
     } else {
         const in_file = try std.fs.cwd().openFile(source, .{});
         defer in_file.close();
-        try denisShim(denis, in_file);
+        try processShim(denis, in_file);
     }
 }
 
@@ -95,7 +95,7 @@ const Config = struct {
 
 var config = Config{ .files = undefined };
 
-fn denisMain() !void {
+fn runner() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -106,7 +106,7 @@ fn denisMain() !void {
     var denis = try Denis.init(arena.allocator(), writer);
 
     for (config.files) |file| {
-        denisFile(&denis, file) catch |err| {
+        processFile(&denis, file) catch |err| {
             std.debug.print("{s}: {s}\n", .{ file, @errorName(err) });
             std.process.exit(1);
         };
@@ -131,7 +131,7 @@ pub fn main() !void {
                             },
                         }),
                     },
-                    .exec = denisMain,
+                    .exec = runner,
                 },
             },
         },
