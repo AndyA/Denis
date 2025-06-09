@@ -18,11 +18,9 @@ fn hashLine(text: []const u8) FullHash {
     return h.finalResult();
 }
 
-fn denisStream(
-    alloc: std.mem.Allocator,
-    reader: std.io.AnyReader,
-    writer: std.io.AnyWriter,
-) !void {
+fn denis(alloc: std.mem.Allocator, in_file: anytype, writer: std.io.AnyWriter) !void {
+    var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
+    const reader = in_buf.reader().any();
     var line_buf = try std.ArrayList(u8).initCapacity(alloc, 1024);
     defer line_buf.deinit();
 
@@ -65,17 +63,11 @@ fn denisFile(source: []const u8) !void {
 
     if (std.mem.eql(u8, source, "-")) {
         const in_file = std.io.getStdIn();
-
-        var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
-        const reader = in_buf.reader().any();
-        try denisStream(arena.allocator(), reader, writer);
+        try denis(arena.allocator(), in_file, writer);
     } else {
         const in_file = try std.fs.cwd().openFile(source, .{});
         defer in_file.close();
-
-        var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
-        const reader = in_buf.reader().any();
-        try denisStream(arena.allocator(), reader, writer);
+        try denis(arena.allocator(), in_file, writer);
     }
 
     try out_buf.flush();
@@ -87,7 +79,7 @@ const Config = struct {
 
 var config = Config{ .files = undefined };
 
-fn denis() !void {
+fn denisMain() !void {
     for (config.files) |file| {
         denisFile(file) catch |err| {
             std.debug.print("{s}: {s}\n", .{ file, @errorName(err) });
@@ -113,7 +105,7 @@ pub fn main() !void {
                             },
                         }),
                     },
-                    .exec = denis,
+                    .exec = denisMain,
                 },
             },
         },
