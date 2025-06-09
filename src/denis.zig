@@ -18,10 +18,12 @@ const HashHasher = struct {
     }
 };
 
+const LOAD = 85;
+
 pub const Denis = struct {
     alloc: std.mem.Allocator,
     line_buf: std.ArrayList(u8),
-    seen: std.HashMapUnmanaged(DenisHash, void, HashHasher, 75),
+    seen: std.HashMapUnmanaged(DenisHash, void, HashHasher, LOAD),
     writer: std.io.AnyWriter,
 
     const Self = @This();
@@ -29,11 +31,16 @@ pub const Denis = struct {
     pub fn init(
         alloc: std.mem.Allocator,
         writer: std.io.AnyWriter,
+        millions: u32,
     ) !Self {
         var line_buf = try std.ArrayList(u8).initCapacity(alloc, 1000);
         errdefer line_buf.deinit();
-        var seen = std.HashMapUnmanaged(DenisHash, void, HashHasher, 75){};
+        var seen = std.HashMapUnmanaged(DenisHash, void, HashHasher, LOAD){};
         errdefer seen.deinit(alloc);
+
+        if (millions != 0) {
+            try seen.ensureTotalCapacity(alloc, millions * 1_000_000);
+        }
 
         return Self{
             .alloc = alloc,

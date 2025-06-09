@@ -26,9 +26,10 @@ fn processFile(denis: *Denis, source: []const u8) !void {
 
 const Config = struct {
     files: []const []const u8,
+    millions: u32,
 };
 
-var config = Config{ .files = undefined };
+var config = Config{ .files = undefined, .millions = 0 };
 
 fn runner() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -38,7 +39,7 @@ fn runner() !void {
     var out_buf = bufferedWriterSize(128 * 1024, out_file.writer());
     const writer = out_buf.writer().any();
 
-    var denis = try Denis.init(arena.allocator(), writer);
+    var denis = try Denis.init(arena.allocator(), writer, config.millions);
 
     for (config.files) |file| {
         processFile(&denis, file) catch |err| {
@@ -55,6 +56,15 @@ pub fn main() !void {
     const app = cli.App{
         .command = cli.Command{
             .name = "denis",
+            .options = try r.allocOptions(&.{
+                .{
+                    .long_name = "millions",
+                    .short_alias = 'M',
+                    .help = "Pre-size the hash map to hold this many million entries.",
+                    .value_ref = r.mkRef(&config.millions),
+                },
+            }),
+
             .target = cli.CommandTarget{
                 .action = cli.CommandAction{
                     .positional_args = cli.PositionalArgs{
