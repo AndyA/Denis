@@ -18,7 +18,7 @@ fn hashLine(text: []const u8) FullHash {
     return h.finalResult();
 }
 
-fn deniqStream(
+fn denisStream(
     alloc: std.mem.Allocator,
     reader: std.io.AnyReader,
     writer: std.io.AnyWriter,
@@ -55,7 +55,7 @@ fn deniqStream(
     }
 }
 
-fn deniqFile(source: []const u8) !void {
+fn denisFile(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -68,14 +68,14 @@ fn deniqFile(source: []const u8) !void {
 
         var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
         const reader = in_buf.reader().any();
-        try deniqStream(arena.allocator(), reader, writer);
+        try denisStream(arena.allocator(), reader, writer);
     } else {
         const in_file = try std.fs.cwd().openFile(source, .{});
         defer in_file.close();
 
         var in_buf = std.io.bufferedReaderSize(128 * 1024, in_file.reader());
         const reader = in_buf.reader().any();
-        try deniqStream(arena.allocator(), reader, writer);
+        try denisStream(arena.allocator(), reader, writer);
     }
 
     try out_buf.flush();
@@ -87,9 +87,9 @@ const Config = struct {
 
 var config = Config{ .files = undefined };
 
-fn deniq() !void {
+fn denis() !void {
     for (config.files) |file| {
-        deniqFile(file) catch |err| {
+        denisFile(file) catch |err| {
             std.debug.print("{s}: {s}\n", .{ file, @errorName(err) });
             std.process.exit(1);
         };
@@ -101,7 +101,7 @@ pub fn main() !void {
 
     const app = cli.App{
         .command = cli.Command{
-            .name = "deniq",
+            .name = "denis",
             .target = cli.CommandTarget{
                 .action = cli.CommandAction{
                     .positional_args = cli.PositionalArgs{
@@ -113,7 +113,7 @@ pub fn main() !void {
                             },
                         }),
                     },
-                    .exec = deniq,
+                    .exec = denis,
                 },
             },
         },
