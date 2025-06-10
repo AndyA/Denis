@@ -1,17 +1,17 @@
 # denis: Extract Unique Lines From a Text File
 
-What, like `uniq(1)`? Yes, a bit like that but removing uniq's restriction that the repeated lines have to be adjacent in the input. When the input data is too large to sort - or you need to preserve its order - `uniq` can't help you. 
+What, like `uniq(1)`? Yes, a bit like that but removing uniq's restriction that the repeated lines have to be adjacent in the input. When the input data is too large to sort - or you need to preserve its order - `uniq` can't help you but `denis` can.
 
-`denis` computes the sha256 hash of every line in its input and stores those hashes in a hashset. It outputs only those lines that it hasn't hashed previously. This means it uses memory in proportion to the number of unique lines in the input - 33 bytes per item or around 3.1GB per hundred million distinct lines. Apart from that there's no limit on the input size.
+`denis` computes the sha256 hash of every line in its input and stores those hashes in a hashset. It outputs only those lines that it hasn't hashed previously. This means it uses memory in proportion to the number of unique lines in the input - 33 bytes per line or around 3.1GB per hundred million distinct lines. Apart from that there's no limit on the input size.
 
-If you know the upper bound of the number of unique items you can use the `--millions` option to pre-allocate enough storage. For example:
+If you know the upper bound of the number of unique lines you can use the `--millions` option to pre-allocate enough storage. For example:
 
 ```sh
 # We're expecting fewer than 200,000,000 uniques
 $ denis --millions 200 dupes.json > dedup.json
 ```
 
-If you don't pre-allocate the hashmap in this way it will grow as it fills by doubling in size when it becomes full. Because the hashmap is a single contiguous chunk of memory this means that you use about twice as much total memory as you would have if you had been able to use `--millions` or `-M` initially.
+If you don't pre-allocate the hashmap in this way it will grow as it fills by doubling in size when it becomes full. Because the hashmap is a single contiguous chunk of memory this pattern of allocations that you use about twice as much total memory as you would have if you had been able to use `--millions` or `-M` initially.
 
 ## Usage
 
