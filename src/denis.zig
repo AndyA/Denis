@@ -10,40 +10,60 @@ fn hashLine(text: []const u8) DenisHash {
 
 const HashHasher = struct {
     const Self = @This();
+
     pub fn hash(_: Self, key: DenisHash) u64 {
         return std.mem.readInt(u64, key[0..8], .little);
     }
+
     pub fn eql(_: Self, a: DenisHash, b: DenisHash) bool {
         return std.mem.eql(u8, &a, &b);
     }
 };
 
-const LOAD = 85;
+const HashSet = std.HashMapUnmanaged(DenisHash, void, HashHasher, 85);
+
+const DenisSet = struct {
+    alloc: std.mem.Allocator,
+    set: HashSet,
+    const Self = @This();
+
+    pub fn init(alloc: std.mem.Allocator, millions: u32) !Self {
+        var set = HashSet{};
+        errdefer set.deinit(alloc);
+
+        if (millions != 0)
+            try set.ensureTotalCapacity(alloc, millions * 1_000_000);
+
+        return Self{ .alloc = alloc, .set = set };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.set.deinit(self.alloc);
+    }
+
+    pub fn novel(self: *Self, line: []const u8) !bool {
+        const hash = hashLine(line);
+        const entry = try self.set.getOrPutContext(self.alloc, hash, HashHasher{});
+        return !entry.found_existing;
+    }
+};
+
+const StringBuffer = std.ArrayList(u8);
 
 pub const Denis = struct {
-    alloc: std.mem.Allocator,
-    line_buf: std.ArrayList(u8),
-    seen: std.HashMapUnmanaged(DenisHash, void, HashHasher, LOAD),
+    line_buf: StringBuffer,
+    seen: DenisSet,
     writer: std.io.AnyWriter,
 
     const Self = @This();
 
-    pub fn init(
-        alloc: std.mem.Allocator,
-        writer: std.io.AnyWriter,
-        millions: u32,
-    ) !Self {
-        var line_buf = try std.ArrayList(u8).initCapacity(alloc, 1000);
+    pub fn init(alloc: std.mem.Allocator, writer: std.io.AnyWriter, millions: u32) !Self {
+        var line_buf = try StringBuffer.initCapacity(alloc, 1000);
         errdefer line_buf.deinit();
-        var seen = std.HashMapUnmanaged(DenisHash, void, HashHasher, LOAD){};
-        errdefer seen.deinit(alloc);
-
-        if (millions != 0) {
-            try seen.ensureTotalCapacity(alloc, millions * 1_000_000);
-        }
+        var seen = try DenisSet.init(alloc, millions);
+        errdefer seen.deinit();
 
         return Self{
-            .alloc = alloc,
             .writer = writer,
             .line_buf = line_buf,
             .seen = seen,
@@ -52,7 +72,7 @@ pub const Denis = struct {
 
     pub fn deinit(self: *Self) void {
         self.line_buf.deinit();
-        self.seen.deinit(self.alloc);
+        self.seen.deinit();
     }
 
     pub fn process(self: *Self, reader: std.io.AnyReader) !void {
@@ -62,13 +82,9 @@ pub const Denis = struct {
                 error.EndOfStream => eof = true,
                 else => return err,
             };
-            if (self.line_buf.items.len == 0) continue; // Skip empty lines
-            const hash = hashLine(self.line_buf.items);
-            const entry = try self.seen.getOrPutContext(self.alloc, hash, HashHasher{});
-            if (!entry.found_existing) {
-                // novelty!
+            if (self.line_buf.items.len == 0) continue; // skip empty lines
+            if (try self.seen.novel(self.line_buf.items))
                 try self.writer.print("{s}\n", .{self.line_buf.items});
-            }
         }
     }
 };
